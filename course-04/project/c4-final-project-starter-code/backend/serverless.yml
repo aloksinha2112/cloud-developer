@@ -3,17 +3,67 @@ service:
 
 plugins:
   - serverless-webpack
+  - serverless-reqvalidator-plugin
+  - serverless-aws-documentation
+  - serverless-plugin-canary-deployments
   - serverless-iam-roles-per-function
+  - serverless-dynamodb-local
+  - serverless-offline
 
 provider:
   name: aws
-  runtime: nodejs8.10
+  runtime: nodejs12.x
 
   stage: ${opt:stage, 'dev'}
-  region: ${opt:region, 'us-east-1'}
+  region: ${opt:region, 'us-east-2'}
+ 
+  environment:
+    TODOS_TABLE: Todos-${self:provider.stage}
+    INDEX_NAME: todosIdIndex
+    TODOS_S3_BUCKET: serverless-todo-alok-images-${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 300
 
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - codedeploy:*
+      Resource:
+        - '*'
+    - Effect: Allow
+      Action:
+        - dynamodb:Scan
+        - dynamodb:Query
+        - dynamodb:PutItem
+        - dynamodb:GetItem
+        - dynamodb:UpdateItem
+      Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
+    - Effect: Allow
+      Action:    
+        - dynamodb:Scan
+        - dynamodb:Query
+        - dynamodb:PutItem
+        - dynamodb:GetItem
+        - dynamodb:UpdateItem
+      Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}/index/${self:provider.environment.INDEX_NAME}
+    - Effect: Allow
+      Action:
+        - s3:PutObject
+        - s3:GetObject
+      Resource: arn:aws:s3:::${self:provider.environment.TODOS_S3_BUCKET}/*    
+    - Effect: Allow
+      Action: 
+        - xray:PutTraceSegments
+        - xray:PutTelemetryRecords
+      Resource: 
+        - '*'
+custom:
+  documentation:
+    api:
+      info:
+        version: v1.0.0
+        title: ToDo API
+        description: Serverless application for ToDo      
 functions:
-
   Auth:
     handler: src/lambda/auth/auth0Authorizer.handler
 
@@ -24,15 +74,17 @@ functions:
       - http:
           method: get
           path: todos
-
+          cors: true
+          authorizer: Auth
   # TODO: Configure this function
-  GetTodos:
   CreateTodo:
     handler: src/lambda/http/createTodo.handler
     events:
       - http:
           method: post
           path: todos
+          cors: true
+          authorizer: Auth
 
   # TODO: Configure this function
   UpdateTodo:
@@ -41,7 +93,8 @@ functions:
       - http:
           method: patch
           path: todos/{todoId}
-
+          cors: true
+          authorizer: Auth
   # TODO: Configure this function
   DeleteTodo:
     handler: src/lambda/http/deleteTodo.handler
@@ -61,3 +114,84 @@ functions:
 resources:
   Resources:
     # TODO: Add any necessary AWS resources
+    GatewayResponseDefault4XX: #for 4xx errors
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Methods: "'GET,OPTION,POST'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        ResponseType: DEFAULT_4XX
+        RestApiId:
+          Ref: ApiGatewayRestApi
+
+    RequestBodyValidator:
+      Type: AWS::ApiGateway::RequestValidator
+      Properties:
+        Name: 'request-body-validator'
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        ValidateRequestBody: true
+        ValidateRequestParameters: false
+
+    TodosDynamoDBTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: partitionKey
+            AttributeType: S
+          - AttributeName: sortKey
+            AttributeType: S
+          - AttributeName: indexKey
+            AttributeType: S
+        KeySchema:
+          - AttributeName: partitionKey
+            KeyType: HASH
+          - AttributeName: sortKey
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.TODOS_TABLE}
+        LocalSecondaryIndexes:
+          - IndexName: ${self:provider.environment.INDEX_NAME}
+            KeySchema:
+              - AttributeName: partitionKey
+                KeyType: HASH
+              - AttributeName: indexKey
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL # What attributes will be copied to an index
+    
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.TODOS_S3_BUCKET}
+        CorsConfiguration:
+          CorsRules:
+            -
+              AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+    
+    BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        PolicyDocument:
+          Id: MyPolicy
+          Version: "2012-10-17"
+          Statement:
+            - Sid: PublicReadForGetBucketObjects
+              Effect: Allow
+              Principal: '*'
+              Action: 
+              - s3:GetObject
+              - s3:PutObject
+              Resource: 'arn:aws:s3:::${self:provider.environment.TODOS_S3_BUCKET}/*'
+        Bucket: !Ref AttachmentsBucket 
