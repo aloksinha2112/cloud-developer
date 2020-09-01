@@ -13,13 +13,16 @@ export const handler: APIGatewayProxyHandler = async (event: APIGatewayProxyEven
   const todoId = event.pathParameters.todoId
 
   // TODO: Return a presigned URL to upload a file for a TODO item with the provided id
-  const url = getUploadUrl(todoId)
+  const uploadUrl = getUploadUrl(todoId)
 
   return {
-    statusCode: 201,
+    statusCode: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': true
+    },
     body: JSON.stringify({
-      todoId: todoId,
-      uploadUrl: url
+      uploadUrl
     })
   }
 }
@@ -28,6 +31,6 @@ function getUploadUrl(todoId: string) {
   return s3.getSignedUrl('putObject', {
     Bucket: bucketName,
     Key: todoId,
-    Expires: +urlExpiration
+    Expires: urlExpiration
   })
 }
